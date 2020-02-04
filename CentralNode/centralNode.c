@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <netinet/ip.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 
 #define CODEC_SAMPLING_RATE (32000)
 #define BITS_PER_CHANNEL (16)
@@ -20,12 +21,6 @@
 #define CODEC_PORTION_OF_SAMPLES_CNT (8 * UDP_PORTION_OF_SAMPLES_CNT)
 #define CODEC_PORTION_OF_SAMPLES_BYTES (BYTES_PER_SAMPLE * CODEC_PORTION_OF_SAMPLES_CNT)
 
-struct media_bus_t
-{
-	int sock;
-	struct sockaddr_in addr;
-} media_bus;
-
 struct mbus_cfg_t
 {
 	char* my_ip_addr;
@@ -39,12 +34,14 @@ struct mbus_cfg_t
 	.sendto_port = 37773,
 };
 
-static char rcv_buff[UDP_PORTION_OF_SAMPLES_BYTES];
+static int global_sock;
 
 static int buffer_frames = CODEC_PORTION_OF_SAMPLES_CNT;
 static unsigned int rate = CODEC_SAMPLING_RATE;
 
-static snd_pcm_t *capture_handle;
+static snd_pcm_t* capture_handle;
+
+static pthread_t to_periph_tid;
 
 static int media_bus_init(struct mbus_cfg_t* cfg)
 {
@@ -57,23 +54,22 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	tv.tv_sec = 3;  /* 3 Seconds Time-out */
 	tv.tv_usec = 0;
 
-	/* Initial zero value for media_bus */
-	memset(&media_bus, 0, sizeof(struct media_bus_t));
+	global_sock = 0;
 
 	/* Create network socket */
-	temp = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if(temp < 0) 
+	temp = socket (AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (temp < 0) 
 	{
 		perror("creation socket error");
 		goto exit;
 	}
-	media_bus.sock = temp;
-	printf("file descriptor (socket) %d successfully created\n", media_bus.sock);
+	global_sock = temp;
+	printf("file descriptor (socket) %d successfully created\n", global_sock);
 
 	/* Set socket options */
 	// Specify the receiving timeouts until reporting an error
-	temp = setsockopt(media_bus.sock, SOL_SOCKET, SO_RCVTIMEO, (char *) &tv, sizeof(struct timeval));
-	if(temp < 0)
+	temp = setsockopt (global_sock, SOL_SOCKET, SO_RCVTIMEO, (char*) &tv, sizeof(struct timeval));
+	if (temp < 0)
 	{
 		perror("setsockopt SO_RCVTIMEO error");
 		goto exit;
@@ -81,8 +77,8 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	printf("setsockopt SO_RCVTIMEO success\n");
 
 	// Specify that address and port can be reused
-	temp = setsockopt(media_bus.sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-	if(temp < 0) 
+	temp = setsockopt (global_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+	if (temp < 0) 
 	{
 		perror("setsockopt SO_REUSEADDR err");
 		goto exit;
@@ -95,7 +91,7 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	myAddr.sin_port = htons(cfg->my_listening_port);
 	inet_aton(cfg->my_ip_addr, &myAddr.sin_addr);
 
-	temp = bind(media_bus.sock, (struct sockaddr *)&myAddr, sizeof(myAddr));
+	temp = bind (global_sock, (struct sockaddr*)&myAddr, sizeof(myAddr));
 	if (temp < 0)
 	{
 		printf("could not bind or connect to socket, error = %d\n", temp);
@@ -103,10 +99,50 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 		goto exit;
 	}
 
-	printf("listening on port %d, socket %u\n", cfg->my_listening_port, media_bus.sock);
+	printf("listening on port %d, socket %u\n", cfg->my_listening_port, global_sock);
 
 exit:
 	return 0;
+}
+
+static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
+{
+    struct sockaddr_in toAddr;
+    int temp = 0;
+
+    toAddr.sin_family = AF_INET;
+    
+    inet_aton(mbus_cfg.sendto_ip_addr, &toAddr.sin_addr);
+    toAddr.sin_port = htons(mbus_cfg.sendto_port);
+
+    /* UDP send to*/                                          /*flag*/
+    temp = sendto (global_sock, data_to_send, data_to_send_len, 0, (struct sockaddr*)&toAddr, sizeof(toAddr));
+    
+    if (temp < 0)
+    {
+        perror("send failed reason");
+    }
+
+    return temp;
+}
+
+void* stream_to_periph_node_thread(void *para)
+{
+	char bufferTemp[CODEC_PORTION_OF_SAMPLES_BYTES];
+	int err;
+
+    while(1) 
+    {
+        if ((err = snd_pcm_readi (capture_handle, bufferTemp, buffer_frames)) != buffer_frames) 
+        {
+            printf ("ERROR: read from audio interface failed (%s)\n", snd_strerror (err));
+        }
+
+        for (unsigned int i = 0; i < (sizeof(bufferTemp) / (UDP_PORTION_OF_SAMPLES_BYTES)); i++) 
+        {
+            media_bus_send ((bufferTemp + i * UDP_PORTION_OF_SAMPLES_BYTES), UDP_PORTION_OF_SAMPLES_BYTES);
+        }
+    }
 }
 
 int main()
@@ -114,7 +150,7 @@ int main()
 	media_bus_init(&mbus_cfg);
 
 	int err;
-    snd_pcm_hw_params_t *hw_params;
+    snd_pcm_hw_params_t* hw_params;
     snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
 
 	/* Open audio capture device */
@@ -222,6 +258,10 @@ int main()
     }
 
     printf("audio interface prepared\n");
+
+    pthread_create(&to_periph_tid, NULL, stream_to_periph_node_thread, NULL);
+
+    pthread_join(to_periph_tid, NULL);
 
     return 0;
 }
