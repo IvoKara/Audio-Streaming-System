@@ -6,6 +6,9 @@
 #include <netinet/ip.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/time.h>
 
 #define CODEC_SAMPLING_RATE (32000)
 #define BITS_PER_CHANNEL (16)
@@ -85,7 +88,7 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	}
 	printf("setsockopt SO_REUSEADDR success\n");
 
-	/* Binding ip address and port to the created socket */
+	/* Binding my (source) ip address and port to the created socket */
 	memset(&myAddr, 0, sizeof(struct sockaddr_in));
 	myAddr.sin_family = AF_INET;
 	myAddr.sin_port = htons(cfg->my_listening_port);
@@ -109,13 +112,13 @@ static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
 {
     struct sockaddr_in toAddr;
     int temp = 0;
-
-    toAddr.sin_family = AF_INET;
     
-    inet_aton(mbus_cfg.sendto_ip_addr, &toAddr.sin_addr);
+    /* Destination socket */
+    toAddr.sin_family = AF_INET;
     toAddr.sin_port = htons(mbus_cfg.sendto_port);
+    inet_aton(mbus_cfg.sendto_ip_addr, &toAddr.sin_addr);
 
-    /* UDP send to*/                                          /*flag*/
+    /* UDP send to destination socket address*/              /*flag*/
     temp = sendto (global_sock, data_to_send, data_to_send_len, 0, (struct sockaddr*)&toAddr, sizeof(toAddr));
     
     if (temp < 0)
@@ -128,16 +131,18 @@ static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
 
 void* stream_to_periph_node_thread(void *para)
 {
-	char bufferTemp[CODEC_PORTION_OF_SAMPLES_BYTES];
+	char bufferTemp[CODEC_PORTION_OF_SAMPLES_BYTES];  //~8KB
 	int err;
 
     while(1) 
     {
+        /* Listening audio capture device for incoming stream - interleaved frames */
         if ((err = snd_pcm_readi (capture_handle, bufferTemp, buffer_frames)) != buffer_frames) 
         {
             printf ("ERROR: read from audio interface failed (%s)\n", snd_strerror (err));
         }
 
+        /* Splitting what was read from capture device (buffer) in small chunks and sending them */
         for (unsigned int i = 0; i < (sizeof(bufferTemp) / (UDP_PORTION_OF_SAMPLES_BYTES)); i++) 
         {
             media_bus_send ((bufferTemp + i * UDP_PORTION_OF_SAMPLES_BYTES), UDP_PORTION_OF_SAMPLES_BYTES);
@@ -259,8 +264,10 @@ int main()
 
     printf("audio interface prepared\n");
 
+    /* Start the thread */
     pthread_create(&to_periph_tid, NULL, stream_to_periph_node_thread, NULL);
 
+    /* wait until is finished */
     pthread_join(to_periph_tid, NULL);
 
     return 0;
