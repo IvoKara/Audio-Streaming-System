@@ -154,10 +154,10 @@ int main()
     snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
 
 	/* Open audio capture device */
-    if ((err = snd_pcm_open (&capture_handle, "plughw:1,0", SND_PCM_STREAM_CAPTURE, 0)) < 0)
+    if ((err = snd_pcm_open (&capture_handle, "hw:1,1", SND_PCM_STREAM_CAPTURE, 0)) < 0)
     {
         printf ("ERROR: cannot open audio capture device %s (%s)\n",
-                 "plughw:1,0",
+                 "hw:1,1",
                  snd_strerror (err));
         exit (1);
     }
