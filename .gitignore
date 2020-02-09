@@ -53,6 +53,5 @@ dkms.conf
 
 # ESP32 build files
 PeripherialNode/build/
-PeripherialNode/sdkconfig
-PeripherialNode/sdkconfig.old
+PeripherialNode/sdk*
 

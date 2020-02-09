@@ -1,0 +1,53 @@
+menu "(!)Peipherial Node Configuration"
+
+    menu "MQTT Configuration"
+
+        config BROKER_TCP_URI
+            string "Broker TCP URL"
+            default "mqtt://192.168.100.171/test"
+            help
+                URL of an mqtt broker for tcp transport
+
+        config PUBLISH_TOPIC
+            string "publish topic"
+            default "/test"
+            help
+                topic to which esp32 client publishes
+
+        config SUBSCIBE_TOPIC
+            string "subscribe topic"
+            default "/test"
+            help
+                topic to which esp32 client subsribes (and expects data)
+
+        config BROKER_CERTIFICATE_OVERRIDE
+            string "Broker certificate override"
+            default ""
+            help
+                Please leave empty if broker certificate included from a textfile; otherwise fill in a base64 part of PEM
+                format certificate
+
+        config BROKER_CERTIFICATE_OVERRIDDEN
+            bool
+            default y if BROKER_CERTIFICATE_OVERRIDE != ""
+
+    endmenu
+
+    menu "Wi-Fi Configuration"
+
+        config WIFI_SSID
+            string "WiFi SSID"
+            default "IveL"
+            help
+                SSID (network name) for the example to connect to.
+
+        config WIFI_PASSWORD
+            string "WiFi Password"
+            default "4akala10"
+            help
+                WiFi password (WPA or WPA2) for the example to use.
+
+		Can be left blank if the network has no security set.
+    endmenu
+
+endmenu
