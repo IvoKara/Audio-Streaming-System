@@ -1,14 +1,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include <alsa/asoundlib.h>
+
 #include <sys/socket.h>
 #include <netinet/ip.h>
 #include <arpa/inet.h>
+#include <netdb.h> 
+
 #include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
+
 #include <sys/time.h>
+
+#include "MQTTClient.h"
 
 #define CODEC_SAMPLING_RATE (32000)
 #define BITS_PER_CHANNEL (16)
@@ -30,11 +37,12 @@ struct mbus_cfg_t
 	unsigned short my_listening_port;
 	char* sendto_ip_addr;
 	unsigned short sendto_port;
-} mbus_cfg = {                          
-	.my_ip_addr = "192.168.100.171",     /* static ip of RPi on my router */
-	.my_listening_port = 27772, 
-	.sendto_ip_addr = "192.168.100.128", /* DHCP ip of ESP32 */
-	.sendto_port = 37773,
+};
+struct mbus_cfg_t mbus_cfg = {       
+        //.my_ip_addr = "192.168.100.171",
+        .my_listening_port = 27772, 
+        .sendto_ip_addr = "192.168.100.128",
+        .sendto_port = 37773,
 };
 
 static int global_sock;
@@ -46,7 +54,23 @@ static snd_pcm_t* capture_handle;
 
 static pthread_t to_periph_tid;
 
-static int media_bus_init(struct mbus_cfg_t* cfg)
+void get_my_ip()
+{
+    char hostname[256];  
+	struct hostent *host_info; 
+    char *my_ip_addr;
+
+	/* To retrieve hostname */
+	gethostname(hostname, sizeof(hostname)); 
+
+	/* To get host information by his name */
+	host_info = gethostbyname(hostname); 
+
+	/* To convert an IP from network byte order into ASCII string */
+	mbus_cfg.my_ip_addr = inet_ntoa(*((struct in_addr*) host_info->h_addr_list[0])); 
+}
+
+static int media_bus_init()
 {
 	int temp = 0;
 	int reuse = 1;
@@ -58,16 +82,19 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	tv.tv_usec = 0;
 
 	global_sock = 0;
+    /* Get current IP*/
+    get_my_ip();
+    printf("* host IP: %s\n", mbus_cfg.my_ip_addr); 
 
 	/* Create network socket */
 	temp = socket (AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (temp < 0) 
 	{
 		perror("creation socket error");
-		goto exit;
+		return 0;
 	}
 	global_sock = temp;
-	printf("file descriptor (socket) %d successfully created\n", global_sock);
+	printf("* file descriptor (socket) %d successfully created\n", global_sock);
 
 	/* Set socket options */
 	// Specify the receiving timeouts until reporting an error
@@ -75,37 +102,36 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	if (temp < 0)
 	{
 		perror("setsockopt SO_RCVTIMEO error");
-		goto exit;
+		return 0;
 	}
-	printf("setsockopt SO_RCVTIMEO success\n");
+	printf("* setsockopt SO_RCVTIMEO success\n");
 
 	// Specify that address and port can be reused
 	temp = setsockopt (global_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 	if (temp < 0) 
 	{
 		perror("setsockopt SO_REUSEADDR err");
-		goto exit;
+		return 0;
 	}
-	printf("setsockopt SO_REUSEADDR success\n");
+	printf("* setsockopt SO_REUSEADDR success\n");
 
 	/* Binding my (source) ip address and port to the created socket */
 	memset(&myAddr, 0, sizeof(struct sockaddr_in));
 	myAddr.sin_family = AF_INET;
-	myAddr.sin_port = htons(cfg->my_listening_port);
-	inet_aton(cfg->my_ip_addr, &myAddr.sin_addr);
+	myAddr.sin_port = htons(mbus_cfg.my_listening_port);
+	inet_aton(mbus_cfg.my_ip_addr, &myAddr.sin_addr);
 
 	temp = bind (global_sock, (struct sockaddr*)&myAddr, sizeof(myAddr));
 	if (temp < 0)
 	{
 		printf("could not bind or connect to socket, error = %d\n", temp);
 		perror("");
-		goto exit;
+		return 0;
 	}
 
-	printf("listening on port %d, socket %u\n", cfg->my_listening_port, global_sock);
+	printf("* listening on port %d, socket %u\n", mbus_cfg.my_listening_port, global_sock);
 
-exit:
-	return 0;
+    return 1;
 }
 
 static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
@@ -150,119 +176,138 @@ void* stream_to_periph_node_thread(void *para)
     }
 }
 
-int main()
+static int audio_interface_init(char *hw_pcm_name)
 {
-	media_bus_init(&mbus_cfg);
-
-	int err;
+    int err;
     snd_pcm_hw_params_t* hw_params;
     snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
 
 	/* Open audio capture device */
-    if ((err = snd_pcm_open (&capture_handle, "hw:1,1", SND_PCM_STREAM_CAPTURE, 0)) < 0)
+    if ((err = snd_pcm_open (&capture_handle, hw_pcm_name, SND_PCM_STREAM_CAPTURE, 0)) < 0)
     {
         printf ("ERROR: cannot open audio capture device %s (%s)\n",
-                 "hw:1,1",
+                 hw_pcm_name,
                  snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("audio CAPTURE interface opened\n");
+    printf("* audio CAPTURE interface opened\n");
 
 	/* Setting blocking mode - block until space is available in the buffer */
     if ((err = snd_pcm_nonblock (capture_handle, 0)) < 0) 
     {
         printf ("ERROR: cannot set block mod (%s)\n",
                 snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("set block mode\n");
+    printf("* set block mode\n");
 
 	/* Allocate space for hardware parameters */
     if ((err = snd_pcm_hw_params_malloc (&hw_params)) < 0) 
     {
         printf ("ERROR: cannot allocate hardware parameter structure (%s)\n",
                  snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("hw_params allocated\n");
+    printf("* hw_params allocated\n");
 
 	/* Fill params with a full configuration space for a PCM */
     if ((err = snd_pcm_hw_params_any (capture_handle, hw_params)) < 0) 
     {
         printf ("ERROR: cannot initialize hardware parameter structure (%s)\n",
                  snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("hw_params initialized\n");
+    printf("* hw_params initialized\n");
 
 	/* Config access mode for hardware parameters - r/w method */
     if ((err = snd_pcm_hw_params_set_access (capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) 
     {
         printf ("ERROR: cannot set access type (%s)\n",
                  snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("hw_params access setted\n");
+    printf("* hw_params access setted\n");
 
 	/* Config PCM sample format */
     if ((err = snd_pcm_hw_params_set_format (capture_handle, hw_params, format)) < 0) 
     {
         printf ("ERROR: cannot set sample format (%s)\n",
                  snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("hw_params format setted\n");
+    printf("* hw_params format setted\n");
 
     /* Config sampling rate near to the target */
     if ((err = snd_pcm_hw_params_set_rate_near (capture_handle, hw_params, &rate, 0)) < 0) 
     {
         printf ("ERROR: cannot set sample rate (%s)\n",
                  snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("hw_params rate setted\n");
+    printf("* hw_params rate setted\n");
 
     /* Config to use 2 channels - stereo */
     if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 2)) < 0) 
     {
         printf ("ERROR: cannot set channel count (%s)\n",
                  snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("hw_params channels setted\n");
+    printf("* hw_params channels setted\n");
 
     /* Set all above configs */
     if ((err = snd_pcm_hw_params (capture_handle, hw_params)) < 0) 
     {
         printf ("ERROR: cannot set parameters (%s)\n",
                  snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("hw_params setted\n");
+    printf("* hw_params setted\n");
 
     /* Remove PCM hardware configuration and free associated resources/memory */
     snd_pcm_hw_params_free (hw_params);
 
-    printf("hw_params freed\n");
+    printf("* hw_params freed\n");
 
     /* Prepare audio interface for use */
     if ((err = snd_pcm_prepare (capture_handle)) < 0) 
     {
         printf ("ERROR: cannot prepare audio interface for use (%s)\n",
                  snd_strerror (err));
-        exit (1);
+        return 0;
     }
 
-    printf("audio interface prepared\n");
+    printf("* audio interface prepared\n");
+    return 1;
+}
+
+static int mqtt_client_init()
+{
+    
+}
+
+int main()
+{
+    printf("PREPARE SOCKET:\n");
+	media_bus_init();
+
+    printf("--------------------------------------\n");
+
+    printf("PREPARE AUDIO INTERFACE:\n");
+    audio_interface_init("hw:1,1");
+
+    printf("--------------------------------------\n");
+    printf("PREPARE MQTT COMMUNICATION");
+
 
     /* Start the thread */
     pthread_create(&to_periph_tid, NULL, stream_to_periph_node_thread, NULL);
