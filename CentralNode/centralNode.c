@@ -31,21 +31,24 @@
 #define CODEC_PORTION_OF_SAMPLES_CNT (8 * UDP_PORTION_OF_SAMPLES_CNT)
 #define CODEC_PORTION_OF_SAMPLES_BYTES (BYTES_PER_SAMPLE * CODEC_PORTION_OF_SAMPLES_CNT)
 
+#define MQTT_BROKER "tcp://192.168.100.171:1883"
+
 struct mbus_cfg_t
 {
 	char* my_ip_addr;
 	unsigned short my_listening_port;
 	char* sendto_ip_addr;
 	unsigned short sendto_port;
-};
-struct mbus_cfg_t mbus_cfg = {       
-        //.my_ip_addr = "192.168.100.171",
-        .my_listening_port = 27772, 
-        .sendto_ip_addr = "192.168.100.128",
-        .sendto_port = 37773,
+} mbus_cfg = {       
+    //.my_ip_addr = "192.168.100.171",
+    .my_listening_port = 27772, 
+    //.sendto_ip_addr = "192.168.100.128",
+    .sendto_port = 37773,
 };
 
 static int global_sock;
+
+static MQTTClient client;
 
 static int buffer_frames = CODEC_PORTION_OF_SAMPLES_CNT;
 static unsigned int rate = CODEC_SAMPLING_RATE;
@@ -54,7 +57,7 @@ static snd_pcm_t* capture_handle;
 
 static pthread_t to_periph_tid;
 
-void get_my_ip()
+static void get_my_ip()
 {
     char hostname[256];  
 	struct hostent *host_info; 
@@ -141,8 +144,12 @@ static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
     
     /* Destination socket */
     toAddr.sin_family = AF_INET;
+    
     toAddr.sin_port = htons(mbus_cfg.sendto_port);
+    
     inet_aton(mbus_cfg.sendto_ip_addr, &toAddr.sin_addr);
+
+    //printf("sending audio stream to %s\n", mbus_cfg.sendto_ip_addr);
 
     /* UDP send to destination socket address*/              /*flag*/
     temp = sendto (global_sock, data_to_send, data_to_send_len, 0, (struct sockaddr*)&toAddr, sizeof(toAddr));
@@ -290,30 +297,101 @@ static int audio_interface_init(char *hw_pcm_name)
     return 1;
 }
 
-static int mqtt_client_init()
+static int mqtt_message_arrive(void *context, char *topicName, int topicLen, MQTTClient_message *message)
 {
+    /* Copy incoming MQTT payload to global variable */
+    mbus_cfg.sendto_ip_addr = (char *)message->payload;
+    mbus_cfg.sendto_ip_addr[message->payloadlen] = '\0';
     
+    /* Debug */
+    printf("%s\n", mbus_cfg.sendto_ip_addr);
+
+    MQTTClient_freeMessage(&message);
+    MQTTClient_free(topicName);
+    return 1;
+}
+
+static int mqtt_client_init(char *topic, int qos)
+{
+    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+    int err;
+    char *client_id = "raspberry-pi4";
+
+    /* Creation of MQTT client */
+    MQTTClient_create(&client, MQTT_BROKER, client_id, MQTTCLIENT_PERSISTENCE_NONE, NULL);
+    conn_opts.keepAliveInterval = 20;
+    conn_opts.cleansession = 1; //true - information is not saved for previous sessions
+
+    printf("* mqtt client with id '%s' created\n", client_id);
+
+    MQTTClient_setCallbacks(client, NULL, NULL, mqtt_message_arrive, NULL);
+
+    /* Connecting to broker */
+    if ((err = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS)
+    {
+        printf("Failed to connect, return code %d\n", err);
+        return 0;
+    }
+
+    printf("* mqtt client connected to broker: %s\n", MQTT_BROKER);
+
+    /* Subscribing to given topic */
+    MQTTClient_subscribe(client, topic, qos);
+
+    printf("* mqtt client subscribed to topic: %s\n", topic);
+
+    printf("* listening for mqtt message:");
+
+    while(1)
+    {
+        if (mbus_cfg.sendto_ip_addr != NULL)
+        {
+            break;
+        }
+    }
+
+    return 1;
+}
+
+static void mqtt_client_deinit(char *topic)
+{
+    MQTTClient_unsubscribe(client, topic);
+    MQTTClient_disconnect(client, 10000);
+    MQTTClient_destroy(&client);
 }
 
 int main()
 {
+    char *topic = "/periph/node1/ip";
+
+    /* aloop module capture device */
+    char *hw_pcm = "plughw:1,0";
+
+    printf("--------------------------------------\n");
+
     printf("PREPARE SOCKET:\n");
 	media_bus_init();
 
     printf("--------------------------------------\n");
 
-    printf("PREPARE AUDIO INTERFACE:\n");
-    audio_interface_init("hw:1,1");
+    printf("PREPARE MQTT COMMUNICATION:\n");
+    mqtt_client_init(topic, 1);
 
     printf("--------------------------------------\n");
-    printf("PREPARE MQTT COMMUNICATION");
 
+    printf("PREPARE AUDIO INTERFACE:\n");
+    audio_interface_init(hw_pcm);
+
+    printf("--------------------------------------\n");
 
     /* Start the thread */
     pthread_create(&to_periph_tid, NULL, stream_to_periph_node_thread, NULL);
 
     /* wait until is finished */
     pthread_join(to_periph_tid, NULL);
+    
+    /* Unsubscribe, Delete client */
+    mqtt_client_deinit(topic);
 
     return 0;
 }
