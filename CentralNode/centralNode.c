@@ -8,6 +8,8 @@
 #include <netinet/ip.h>
 #include <arpa/inet.h>
 #include <netdb.h> 
+#include <sys/ioctl.h>
+#include <net/if.h>
 
 #include <pthread.h>
 #include <unistd.h>
@@ -33,15 +35,15 @@
 
 #define MQTT_BROKER "tcp://192.168.100.171:1883"
 
-struct mbus_cfg_t
+static struct mbus_cfg_t
 {
 	char* my_ip_addr;
 	unsigned short my_listening_port;
 	char* sendto_ip_addr;
 	unsigned short sendto_port;
-} mbus_cfg = {       
+} mbus_cfg = {
     //.my_ip_addr = "192.168.100.171",
-    .my_listening_port = 27772, 
+    .my_listening_port = 27772,
     //.sendto_ip_addr = "192.168.100.128",
     .sendto_port = 37773,
 };
@@ -50,6 +52,8 @@ static int global_sock;
 
 static MQTTClient client;
 
+static int first_arrived = 0;
+
 static int buffer_frames = CODEC_PORTION_OF_SAMPLES_CNT;
 static unsigned int rate = CODEC_SAMPLING_RATE;
 
@@ -57,23 +61,24 @@ static snd_pcm_t* capture_handle;
 
 static pthread_t to_periph_tid;
 
-static void get_my_ip()
+static void get_my_ip(int socketfd, char *network_interface)
 {
-    char hostname[256];  
-	struct hostent *host_info; 
-    char *my_ip_addr;
+    struct ifreq ifr;
+    char *my_ip;
 
-	/* To retrieve hostname */
-	gethostname(hostname, sizeof(hostname)); 
+    ifr.ifr_addr.sa_family = AF_INET;
+	strncpy(ifr.ifr_name , network_interface, IFNAMSIZ - 1);
+	ioctl(socketfd, SIOCGIFADDR, &ifr);
 
-	/* To get host information by his name */
-	host_info = gethostbyname(hostname); 
+    my_ip = inet_ntoa(((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr);
 
-	/* To convert an IP from network byte order into ASCII string */
-	mbus_cfg.my_ip_addr = inet_ntoa(*((struct in_addr*) host_info->h_addr_list[0])); 
+    mbus_cfg.my_ip_addr = (char *) malloc(strlen(my_ip));
+    strcpy(mbus_cfg.my_ip_addr, my_ip);
+
+    printf("device IP: %s\n", mbus_cfg.my_ip_addr);
 }
 
-static int media_bus_init()
+static int media_bus_init(char *network_interface)
 {
 	int temp = 0;
 	int reuse = 1;
@@ -85,9 +90,6 @@ static int media_bus_init()
 	tv.tv_usec = 0;
 
 	global_sock = 0;
-    /* Get current IP*/
-    get_my_ip();
-    printf("* host IP: %s\n", mbus_cfg.my_ip_addr); 
 
 	/* Create network socket */
 	temp = socket (AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -98,6 +100,9 @@ static int media_bus_init()
 	}
 	global_sock = temp;
 	printf("* file descriptor (socket) %d successfully created\n", global_sock);
+
+        /* Get device IP */
+	get_my_ip(global_sock, network_interface);
 
 	/* Set socket options */
 	// Specify the receiving timeouts until reporting an error
@@ -141,7 +146,7 @@ static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
 {
     struct sockaddr_in toAddr;
     int temp = 0;
-    
+
     /* Destination socket */
     toAddr.sin_family = AF_INET;
     
@@ -299,15 +304,22 @@ static int audio_interface_init(char *hw_pcm_name)
 
 static int mqtt_message_arrive(void *context, char *topicName, int topicLen, MQTTClient_message *message)
 {
-    /* Copy incoming MQTT payload to global variable */
-    mbus_cfg.sendto_ip_addr = (char *)message->payload;
-    mbus_cfg.sendto_ip_addr[message->payloadlen] = '\0';
-    
-    /* Debug */
-    printf("%s\n", mbus_cfg.sendto_ip_addr);
+    int temp = 0;
+    char *payload;
+
+    if (strcmp(topicName, "/periph/node1/ip") == 0)
+    {
+        /* Copy incoming MQTT payload to global variable */
+	printf("err here?\n");
+        mbus_cfg.sendto_ip_addr = (char *) malloc(sizeof(message->payload));
+        strcpy(mbus_cfg.sendto_ip_addr, message->payload);
+        printf("%s\n", mbus_cfg.sendto_ip_addr);
+    }
 
     MQTTClient_freeMessage(&message);
     MQTTClient_free(topicName);
+
+    first_arrived++;
     return 1;
 }
 
@@ -317,10 +329,14 @@ static int mqtt_client_init(char *topic, int qos)
     int err;
     char *client_id = "raspberry-pi4";
 
+    printf("here?\n");
+
     /* Creation of MQTT client */
     MQTTClient_create(&client, MQTT_BROKER, client_id, MQTTCLIENT_PERSISTENCE_NONE, NULL);
     conn_opts.keepAliveInterval = 20;
     conn_opts.cleansession = 1; //true - information is not saved for previous sessions
+
+    printf("here?\n");
 
     printf("* mqtt client with id '%s' created\n", client_id);
 
@@ -342,13 +358,7 @@ static int mqtt_client_init(char *topic, int qos)
 
     printf("* listening for mqtt message:");
 
-    while(1)
-    {
-        if (mbus_cfg.sendto_ip_addr != NULL)
-        {
-            break;
-        }
-    }
+    while(!first_arrived) {}
 
     return 1;
 }
@@ -362,22 +372,26 @@ static void mqtt_client_deinit(char *topic)
 
 int main()
 {
+    /* Network interface - wlan0->wifi; eth0 -> ethernet */
+    char *net_int = "wlan0";
+
+    /* Subscription topic to recieve peripheral node ip */
     char *topic = "/periph/node1/ip";
 
     /* aloop module capture device */
-    char *hw_pcm = "plughw:1,0";
+    char *hw_pcm = "hw:1,1";
 
     printf("--------------------------------------\n");
 
     printf("PREPARE SOCKET:\n");
-	media_bus_init();
+    media_bus_init(net_int);
 
-    printf("--------------------------------------\n");
+    printf("--------------------------------------%s\n", mbus_cfg.my_ip_addr);
 
     printf("PREPARE MQTT COMMUNICATION:\n");
     mqtt_client_init(topic, 1);
 
-    printf("--------------------------------------\n");
+    printf("--------------------------------------%s\n", mbus_cfg.sendto_ip_addr);
 
     printf("PREPARE AUDIO INTERFACE:\n");
     audio_interface_init(hw_pcm);
