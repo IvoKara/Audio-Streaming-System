@@ -1,7 +1,10 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <time.h>
+
 #include "esp_wifi.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -26,9 +29,11 @@ static const char *TAG = "PERIPHERAL_NODE";
 static EventGroupHandle_t wifi_event_group;
 const static int CONNECTED_BIT = BIT0;
 
-char my_ipv4_addr[16];
+static char my_ipv4_addr[16];
 
-static void network_to_ip_str(char *network_byte_order)
+static int recieved_ip = 0;
+
+static void nbo_to_str_ip(char *network_byte_order)
 {
     int nbo_len = 8;
     char octet_hex[5];
@@ -49,24 +54,28 @@ static void network_to_ip_str(char *network_byte_order)
 	}
 }
 
+static void get_my_ip()
+{
+    /* GET TCP/IP adapter info */
+    tcpip_adapter_ip_info_t ipInfo; 
+    tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ipInfo);
+    
+    /* GLOBAL - Convert IP from Network Byte Oreder to String */
+    char ip_network_byte_order[8];
+    sprintf(ip_network_byte_order, "%x", ipInfo.ip.addr);
+    nbo_to_str_ip(ip_network_byte_order);
+}
+
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
     int msg_id;
-    char message[256];
     int qos = 1;
 
-    /* Get device IP */
-    tcpip_adapter_ip_info_t ipInfo; 
-    tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ipInfo);
-    
-    /* Convert IP to string */
-    char ip_network_byte_order[8];
-    sprintf(ip_network_byte_order, "%x", ipInfo.ip.addr);
+    char rcv_topic[strlen(CONFIG_TOPIC)*2];
 
-    network_to_ip_str(ip_network_byte_order);
-
-    strcpy(message, my_ipv4_addr);
+    strcpy(rcv_topic, CONFIG_TOPIC);
+    strcat(rcv_topic, "/received");
 
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
@@ -75,7 +84,7 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
             msg_id = esp_mqtt_client_subscribe(client, CONFIG_TOPIC, qos);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
-            msg_id = esp_mqtt_client_subscribe(client, "/periph/node1/ip/received", qos);
+            msg_id = esp_mqtt_client_subscribe(client, rcv_topic, qos);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
             break;
@@ -86,9 +95,6 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 
         case MQTT_EVENT_SUBSCRIBED:
             ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
-
-            // msg_id = esp_mqtt_client_publish(client, CONFIG_TOPIC, message, 0, qos, 0);
-            // ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
             break;
 
         case MQTT_EVENT_UNSUBSCRIBED:
@@ -103,6 +109,12 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "MQTT_EVENT_DATA");
             printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
             printf("DATA=%.*s\r\n", event->data_len, event->data);
+            
+            if (strncmp(event->topic, rcv_topic, strlen(rcv_topic)) == 0)
+            {
+                recieved_ip = 1;
+            }
+
             break;
 
         case MQTT_EVENT_ERROR:
@@ -167,6 +179,20 @@ static void mqtt_app_start(void)
 
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_start(client);
+
+    /* Get device IP address */
+    get_my_ip();
+
+    /* portTICK_PERIOD_MS -> to calculate real time from tick rate */
+    const TickType_t milli_seconds = 5000 / portTICK_PERIOD_MS; 
+
+    while (!recieved_ip)
+    {
+        vTaskDelay(milli_seconds);
+        esp_mqtt_client_publish(client, CONFIG_TOPIC, my_ipv4_addr, 0, 1, 0);
+        ESP_LOGI(TAG, "sent publish successful");   
+        vTaskDelay(milli_seconds);
+    }
 }
 
 void app_main()

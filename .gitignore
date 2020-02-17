@@ -52,6 +52,6 @@ Mkfile.old
 dkms.conf
 
 # ESP32 build files
-PeripherialNode/build/
-PeripherialNode/sdk*
+PeripheralNode/build/
+PeripheralNode/sdk*
 

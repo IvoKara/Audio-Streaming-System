@@ -9,7 +9,7 @@ menu "(!)Peipheral Node Configuration"
 
         config TOPIC
 	    string "Topic to publish and suscribe"
-	    default "/periph/node1/ip"
+	    default "home/room1/ip"
     endmenu
 
     menu "Wi-Fi Configuration"
