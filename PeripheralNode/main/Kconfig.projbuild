@@ -1,0 +1,29 @@
+menu "(!)Peipheral Node Configuration"
+
+    menu "MQTT Configuration"
+        config BROKER_URL
+            string "Broker TCP URL"
+            default "mqtt://192.168.100.171"
+            help
+                URL of an mqtt broker for tcp transport
+
+        config TOPIC
+	    string "Topic to publish and suscribe"
+	    default "/periph/node1/ip"
+    endmenu
+
+    menu "Wi-Fi Configuration"
+        config WIFI_SSID
+            string "WiFi SSID"
+            default "IveL"
+            help
+                SSID (network name) for the example to connect to.
+
+        config WIFI_PASSWORD
+            string "WiFi Password"
+            default "4akala10"
+            help
+                WiFi password (WPA or WPA2) for the example to use.
+    endmenu
+
+endmenu
