@@ -68,8 +68,6 @@ static void get_my_ip(char *network_interface)
     
     int socketfd = socket(AF_INET, SOCK_DGRAM, 0);
 
-    printf("%d\n", socketfd);
-
     ifr.ifr_addr.sa_family = AF_INET;
 	strncpy(ifr.ifr_name , network_interface, IFNAMSIZ - 1);
 	ioctl(socketfd, SIOCGIFADDR, &ifr);
@@ -86,7 +84,8 @@ static void get_my_ip(char *network_interface)
 
 static int media_bus_init(struct media_bus_node_t *node)
 {
-	int temp = 0;
+	int err = 0;
+	int sock = 0;
 	int reuse = 1;
 
 	struct sockaddr_in myAddr;
@@ -95,36 +94,32 @@ static int media_bus_init(struct media_bus_node_t *node)
 	tv.tv_sec = 3;  /* 3 Seconds Time-out */
 	tv.tv_usec = 0;
 
-    node->port = 27772;
-
 	/* Create network socket */
-	temp = socket (AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (temp <= 0) 
+	sock = socket (AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (sock <= 0) 
 	{
 		perror("creation socket error");
 		return 0;
 	}
-	node->socketfd = temp;
-	printf("* file descriptor (socket) %d successfully created\n", node->socketfd);
 
 	/* Set socket options */
-	// Specify the receiving timeouts until reporting an error
-	temp = setsockopt (node->socketfd, SOL_SOCKET, SO_RCVTIMEO, (char*) &tv, sizeof(struct timeval));
-	if (temp < 0)
+	/* 1) Specify the receiving timeouts until reporting an error */
+	err = setsockopt (sock, SOL_SOCKET, SO_RCVTIMEO, (char*) &tv, sizeof(struct timeval));
+	if (err < 0)
 	{
-		perror("setsockopt SO_RCVTIMEO error");
+		printf("setsockopt SO_RCVTIMEO error = %d\n", err);
+		perror("");
 		return 0;
 	}
-	printf("* setsockopt SO_RCVTIMEO success\n");
 
-	// Specify that address and port can be reused
-	temp = setsockopt (node->socketfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-	if (temp < 0) 
+	/* 2) Specify that address and port can be reused */
+	err = setsockopt (sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+	if (err < 0) 
 	{
-		perror("setsockopt SO_REUSEADDR err");
+		printf("setsockopt SO_REUSEADDR error = %d\n", err);
+		perror("");
 		return 0;
 	}
-	printf("* setsockopt SO_REUSEADDR success\n");
 
 	/* Binding my (source) ip address and port to the created socket */
 	memset(&myAddr, 0, sizeof(struct sockaddr_in));
@@ -132,17 +127,19 @@ static int media_bus_init(struct media_bus_node_t *node)
 	myAddr.sin_port = htons(central.port);
 	inet_aton(central.ip_addr, &myAddr.sin_addr);
 
-	temp = bind (node->socketfd, (struct sockaddr*)&myAddr, sizeof(myAddr));
-	if (temp < 0)
+	err = bind (sock, (struct sockaddr*)&myAddr, sizeof(myAddr));
+	if (err < 0)
 	{
-		printf("could not bind or connect to socket, error = %d\n", temp);
+		printf("could not bind or connect to socket error = %d\n", err);
 		perror("");
 		return 0;
 	}
 
-	printf("* binded device on port %d, socket %u\n", central.port, node->socketfd);
-
-    return 1;
+	/* Set required params for periph node */
+	node->port = 37773;
+	node->socketfd = sock;
+    
+	return 1;
 }
 
 static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
@@ -319,24 +316,19 @@ static int mqtt_message_send(char *topic, char *payload)
 
     strcat(topic, "/received");
 
+    /* publish MQTT message to stop receiving IP address from the corresponding node */
     MQTTClient_publishMessage(client, topic, &publish_message, NULL);
-    printf("* send 'recieve' message: %s\n", payload);
 }
 
 static int mqtt_message_arrive(void *context, char *topicName, int topicLen, MQTTClient_message *message)
 {
-    printf("--------------------------------------\n");
-    
     /* Copy incoming MQTT payload to global variable */
-	printf("MQTT MESSAGE ARRIVED\n");
     strcpy(periphs[periph_ip_index].ip_addr, message->payload);
-    printf("Data: %s\n", periphs[periph_ip_index].ip_addr);
-	printf("Topic: %s\n", topicName);
 
     media_bus_init(&periphs[periph_ip_index++]);
 
     /* Send 'receive' message */
-	mqtt_message_send(topicName, "1");
+    mqtt_message_send(topicName, "1");
 
     MQTTClient_freeMessage(&message);
     MQTTClient_free(topicName);
@@ -373,7 +365,11 @@ static int mqtt_client_init(char *topic, int qos)
 
     printf("* mqtt client subscribed to topic: %s\n", topic);
 
-    while (1) { }
+    printf("* waiting to recieve IP...\n");
+
+    while (!periph_ip_index) { }
+
+    printf("* received first IP to stream\n");
 
     return 1;
 }
@@ -403,25 +399,36 @@ int main()
 
     printf("--------------------------------------\n");
 
-    printf("PREPARE MQTT COMMUNICATION:\n");
+    printf("INIT MQTT COMMUNICATION:\n");
     mqtt_client_init(topic, 1);
-
-    /*printf("--------------------------------------\n");
-
-    // printf("PREPARE SOCKET:\n");
-    // media_bus_init(net_int);
 
     printf("--------------------------------------\n");
 
     printf("PREPARE AUDIO INTERFACE:\n");
-//    audio_interface_init(hw_pcm);
+    audio_interface_init(hw_pcm);
 
     printf("--------------------------------------\n");
 
-    /* Start the thread */
+    printf("START STREAMING THREADS:\n");
+
+    int temp = 0;
+
+    while(1)
+    {
+        if(temp < periph_ip_index && periphs[temp].socketfd != 0)
+        {
+            printf("streaming to %s on socket %d\n", periphs[temp].ip_addr, periphs[temp].socketfd);
+            temp++;
+
+            if(temp >= PERIPHERAL_NODES_MAX_NUMBER)
+            {
+            break;
+            }
+        }
+    }
+
 //    pthread_create(&to_periph_tid, NULL, stream_to_periph_node_thread, NULL);
 
-    /* wait until is finished */
 //    pthread_join(to_periph_tid, NULL);*/
 
     /* Unsubscribe, Delete client */
