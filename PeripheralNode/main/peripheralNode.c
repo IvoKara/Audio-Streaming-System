@@ -66,6 +66,8 @@ static void get_my_ip()
     nbo_to_str_ip(ip_network_byte_order);
 }
 
+
+
 static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
@@ -128,6 +130,33 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
     return ESP_OK;
 }
 
+static void mqtt_app_start(void)
+{
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .uri = CONFIG_BROKER_URL,
+        .event_handle = mqtt_event_handler,
+    };
+
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_start(client);
+
+    /* Get device IP address */
+    get_my_ip();
+
+    /* portTICK_PERIOD_MS -> to calculate real time from tick rate */
+    const TickType_t milli_seconds = 5000 / portTICK_PERIOD_MS; 
+
+    while (!recieved_ip)
+    {
+        vTaskDelay(milli_seconds);
+        esp_mqtt_client_publish(client, CONFIG_TOPIC, my_ipv4_addr, 0, 1, 0);
+        ESP_LOGI(TAG, "sent publish successful");   
+        vTaskDelay(milli_seconds);
+    }
+}
+
+
+
 static esp_err_t wifi_event_handler(void *ctx, system_event_t *event)
 {
     switch (event->event_id) {
@@ -170,30 +199,7 @@ static void wifi_init(void)
     xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT, false, true, portMAX_DELAY);
 }
 
-static void mqtt_app_start(void)
-{
-    esp_mqtt_client_config_t mqtt_cfg = {
-        .uri = CONFIG_BROKER_URL,
-        .event_handle = mqtt_event_handler,
-    };
 
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
-    esp_mqtt_client_start(client);
-
-    /* Get device IP address */
-    get_my_ip();
-
-    /* portTICK_PERIOD_MS -> to calculate real time from tick rate */
-    const TickType_t milli_seconds = 5000 / portTICK_PERIOD_MS; 
-
-    while (!recieved_ip)
-    {
-        vTaskDelay(milli_seconds);
-        esp_mqtt_client_publish(client, CONFIG_TOPIC, my_ipv4_addr, 0, 1, 0);
-        ESP_LOGI(TAG, "sent publish successful");   
-        vTaskDelay(milli_seconds);
-    }
-}
 
 void app_main()
 {
