@@ -66,18 +66,23 @@ static void get_my_ip(char *network_interface)
     char *my_ip;
     struct ifreq ifr;
     
+    /* Creating socket */
     int socketfd = socket(AF_INET, SOCK_DGRAM, 0);
 
+    /* Accessing network interface information by passing address using ioctl sys call */
     ifr.ifr_addr.sa_family = AF_INET;
 	strncpy(ifr.ifr_name , network_interface, IFNAMSIZ - 1);
 	ioctl(socketfd, SIOCGIFADDR, &ifr);
     
+    /* Closing socket */
     close(socketfd);
 
+    /* Extracting IP address */
     my_ip = inet_ntoa(((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr);
 
+    /* Copying to global variable */
     strcpy(central.ip_addr, my_ip);
-    printf("device IP: %s\n", central.ip_addr);
+    printf("* device IP: %s\n", central.ip_addr);
 }
 
 
@@ -94,17 +99,19 @@ static int media_bus_init(struct media_bus_node_t *node)
 	tv.tv_sec = 3;  /* 3 Seconds Time-out */
 	tv.tv_usec = 0;
 
+
 	/* Create network socket */
-	sock = socket (AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (sock <= 0) 
 	{
 		perror("creation socket error");
 		return 0;
 	}
 
+
 	/* Set socket options */
 	/* 1) Specify the receiving timeouts until reporting an error */
-	err = setsockopt (sock, SOL_SOCKET, SO_RCVTIMEO, (char*) &tv, sizeof(struct timeval));
+	err = setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*) &tv, sizeof(struct timeval));
 	if (err < 0)
 	{
 		printf("setsockopt SO_RCVTIMEO error = %d\n", err);
@@ -112,8 +119,9 @@ static int media_bus_init(struct media_bus_node_t *node)
 		return 0;
 	}
 
+
 	/* 2) Specify that address and port can be reused */
-	err = setsockopt (sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+	err = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 	if (err < 0) 
 	{
 		printf("setsockopt SO_REUSEADDR error = %d\n", err);
@@ -121,13 +129,14 @@ static int media_bus_init(struct media_bus_node_t *node)
 		return 0;
 	}
 
+
 	/* Binding my (source) ip address and port to the created socket */
 	memset(&myAddr, 0, sizeof(struct sockaddr_in));
 	myAddr.sin_family = AF_INET;
 	myAddr.sin_port = htons(central.port);
 	inet_aton(central.ip_addr, &myAddr.sin_addr);
 
-	err = bind (sock, (struct sockaddr*)&myAddr, sizeof(myAddr));
+	err = bind(sock, (struct sockaddr*)&myAddr, sizeof(myAddr));
 	if (err < 0)
 	{
 		printf("could not bind or connect to socket error = %d\n", err);
@@ -135,10 +144,12 @@ static int media_bus_init(struct media_bus_node_t *node)
 		return 0;
 	}
 
+
 	/* Set required params for periph node */
 	node->port = 37773;
 	node->socketfd = sock;
-    
+
+
 	return 1;
 }
 
@@ -154,7 +165,7 @@ static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
     inet_aton(central.ip_addr, &toAddr.sin_addr);
 
     /* UDP send to destination socket address*/              /*flag*/
-    temp = sendto (central.socketfd, data_to_send, data_to_send_len, 0, (struct sockaddr*)&toAddr, sizeof(toAddr));
+    temp = sendto(central.socketfd, data_to_send, data_to_send_len, 0, (struct sockaddr*)&toAddr, sizeof(toAddr));
     
     if (temp < 0)
     {
@@ -168,14 +179,15 @@ void* stream_to_periph_node_thread(void *para)
 {
 	int err;
     int buffer_frames = CODEC_PORTION_OF_SAMPLES_CNT;
+
 	char bufferTemp[CODEC_PORTION_OF_SAMPLES_BYTES];  //~8KB
 
-    while(1) 
+    while (1) 
     {
         /* Listening audio capture device for incoming stream - interleaved frames */
         if ((err = snd_pcm_readi (capture_handle, bufferTemp, buffer_frames)) != buffer_frames) 
         {
-            printf ("ERROR: read from audio interface failed (%s)\n", snd_strerror (err));
+            printf("ERROR: read from audio interface failed (%s)\n", snd_strerror (err));
         }
 
         /* Splitting what was read from capture device (buffer) in small chunks and sending them */
@@ -186,121 +198,155 @@ void* stream_to_periph_node_thread(void *para)
     }
 }
 
+static int start_streaming_threads()
+{
+    int temp = 0;
+
+    while (1)
+    {
+        if(temp < periph_ip_index && periphs[temp].socketfd != 0)
+        {
+            printf("streaming to %s on socket %d\n", periphs[temp].ip_addr, periphs[temp].socketfd);
+            temp++;
+
+            if(temp >= PERIPHERAL_NODES_MAX_NUMBER)
+            {
+                perror("Too many peripheral nodes");
+                return 0;
+            }
+        }
+    }
+    
+    return 1;
+}
+
 
 
 static int audio_interface_init(char *hw_pcm_name)
 {
     int err;
     unsigned int rate = CODEC_SAMPLING_RATE;
+    
     snd_pcm_hw_params_t* hw_params;
     snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
 
 
 	/* Open audio capture device */
-    if ((err = snd_pcm_open (&capture_handle, hw_pcm_name, SND_PCM_STREAM_CAPTURE, 0)) < 0)
+    err = snd_pcm_open(&capture_handle, hw_pcm_name, SND_PCM_STREAM_CAPTURE, 0);
+    if (err < 0)
     {
-        printf ("ERROR: cannot open audio capture device %s (%s)\n",
+        printf("ERROR: cannot open audio capture device %s (%s)\n",
                  hw_pcm_name,
                  snd_strerror (err));
         return 0;
-    }
-
+    }    
     printf("* audio CAPTURE interface opened\n");
 
-	/* Setting blocking mode - block until space is available in the buffer */
-    if ((err = snd_pcm_nonblock (capture_handle, 0)) < 0) 
+	
+    /* Setting blocking mode - block until space is available in the buffer */
+    err = snd_pcm_nonblock(capture_handle, 0);
+    if (err < 0) 
     {
-        printf ("ERROR: cannot set block mod (%s)\n",
+        printf("ERROR: cannot set block mod (%s)\n",
                 snd_strerror (err));
         return 0;
     }
-
     printf("* set block mode\n");
 
+
 	/* Allocate space for hardware parameters */
-    if ((err = snd_pcm_hw_params_malloc (&hw_params)) < 0) 
+    err = snd_pcm_hw_params_malloc(&hw_params);
+    if (err < 0) 
     {
-        printf ("ERROR: cannot allocate hardware parameter structure (%s)\n",
+        printf("ERROR: cannot allocate hardware parameter structure (%s)\n",
                  snd_strerror (err));
         return 0;
     }
-
     printf("* hw_params allocated\n");
 
+
 	/* Fill params with a full configuration space for a PCM */
-    if ((err = snd_pcm_hw_params_any (capture_handle, hw_params)) < 0) 
+    err = snd_pcm_hw_params_any(capture_handle, hw_params);
+    if (err < 0) 
     {
-        printf ("ERROR: cannot initialize hardware parameter structure (%s)\n",
+        printf("ERROR: cannot initialize hardware parameter structure (%s)\n",
                  snd_strerror (err));
         return 0;
     }
-
     printf("* hw_params initialized\n");
 
+
 	/* Config access mode for hardware parameters - r/w method */
-    if ((err = snd_pcm_hw_params_set_access (capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) 
+    err = snd_pcm_hw_params_set_access(capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
+    if (err < 0) 
     {
-        printf ("ERROR: cannot set access type (%s)\n",
+        printf("ERROR: cannot set access type (%s)\n",
                  snd_strerror (err));
         return 0;
     }
-
     printf("* hw_params access setted\n");
 
+
 	/* Config PCM sample format */
-    if ((err = snd_pcm_hw_params_set_format (capture_handle, hw_params, format)) < 0) 
+    err = snd_pcm_hw_params_set_format(capture_handle, hw_params, format);
+    if (err < 0) 
     {
-        printf ("ERROR: cannot set sample format (%s)\n",
+        printf("ERROR: cannot set sample format (%s)\n",
                  snd_strerror (err));
         return 0;
     }
-
     printf("* hw_params format setted\n");
 
+
     /* Config sampling rate near to the target */
-    if ((err = snd_pcm_hw_params_set_rate_near (capture_handle, hw_params, &rate, 0)) < 0) 
+    err = snd_pcm_hw_params_set_rate_near(capture_handle, hw_params, &rate, 0);
+    if (err < 0) 
     {
-        printf ("ERROR: cannot set sample rate (%s)\n",
+        printf("ERROR: cannot set sample rate (%s)\n",
                  snd_strerror (err));
         return 0;
     }
-
     printf("* hw_params rate setted\n");
 
+
     /* Config to use 2 channels - stereo */
-    if ((err = snd_pcm_hw_params_set_channels (capture_handle, hw_params, 2)) < 0) 
+    err = snd_pcm_hw_params_set_channels(capture_handle, hw_params, 2);
+    if (err < 0) 
     {
-        printf ("ERROR: cannot set channel count (%s)\n",
+        printf("ERROR: cannot set channel count (%s)\n",
                  snd_strerror (err));
         return 0;
     }
-
     printf("* hw_params channels setted\n");
 
+
     /* Set all above configs */
-    if ((err = snd_pcm_hw_params (capture_handle, hw_params)) < 0) 
+    err = snd_pcm_hw_params(capture_handle, hw_params);
+    if (err < 0) 
     {
-        printf ("ERROR: cannot set parameters (%s)\n",
+        printf("ERROR: cannot set parameters (%s)\n",
                  snd_strerror (err));
         return 0;
     }
-
     printf("* hw_params setted\n");
 
-    /* Remove PCM hardware configuration and free associated resources/memory */
-    snd_pcm_hw_params_free (hw_params);
 
+    /* Remove PCM hardware configuration and free associated resources/memory */
+    snd_pcm_hw_params_free(hw_params);
     printf("* hw_params freed\n");
 
+
     /* Prepare audio interface for use */
-    if ((err = snd_pcm_prepare (capture_handle)) < 0) 
+    err = snd_pcm_prepare(capture_handle);
+    if (err < 0) 
     {
-        printf ("ERROR: cannot prepare audio interface for use (%s)\n",
+        printf("ERROR: cannot prepare audio interface for use (%s)\n",
                  snd_strerror (err));
         return 0;
     }
-
     printf("* audio interface prepared\n");
+
+
     return 1;
 }
 
@@ -325,11 +371,13 @@ static int mqtt_message_arrive(void *context, char *topicName, int topicLen, MQT
     /* Copy incoming MQTT payload to global variable */
     strcpy(periphs[periph_ip_index].ip_addr, message->payload);
 
+    /* Create socket to the corresponding Peripheral Node */
     media_bus_init(&periphs[periph_ip_index++]);
 
     /* Send 'receive' message */
     mqtt_message_send(topicName, "1");
 
+    /* Clean allocated memory for MQTT message */
     MQTTClient_freeMessage(&message);
     MQTTClient_free(topicName);
 
@@ -338,38 +386,42 @@ static int mqtt_message_arrive(void *context, char *topicName, int topicLen, MQT
 
 static int mqtt_client_init(char *topic, int qos)
 {
-    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
     int err;
     char *client_id = "raspberry-pi4";
+    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+
 
     /* Creation of MQTT client */
     MQTTClient_create(&client, MQTT_BROKER_URI, client_id, MQTTCLIENT_PERSISTENCE_NONE, NULL);
     conn_opts.keepAliveInterval = 20;
-    conn_opts.cleansession = 1; //true - information is not saved for previous sessions
-
+    conn_opts.cleansession = 1; /* true - information is not saved for previous sessions */
     printf("* mqtt client with id '%s' created\n", client_id);
 
+    
+    /* Setting callback function for receiving messages */
     MQTTClient_setCallbacks(client, NULL, NULL, mqtt_message_arrive, NULL);
 
+
     /* Connecting to broker */
-    if ((err = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS)
+    err = MQTTClient_connect(client, &conn_opts);
+    if (err != MQTTCLIENT_SUCCESS)
     {
         printf("Failed to connect, return code %d\n", err);
         return 0;
     }
-
     printf("* mqtt client connected to broker: %s\n", MQTT_BROKER_URI);
+
 
     /* Subscribing to given topic */
     MQTTClient_subscribe(client, topic, qos);
-
     printf("* mqtt client subscribed to topic: %s\n", topic);
 
+
+    /* Wait till receive ONE IP address */
     printf("* waiting to recieve IP...\n");
-
     while (!periph_ip_index) { }
-
     printf("* received first IP to stream\n");
+
 
     return 1;
 }
@@ -392,9 +444,9 @@ int main()
     /* aloop module capture device */
     char *hw_pcm = "hw:1,1";
 
-    /* All the peripheral nodes SHOULD have this port number */
-    int periph_ports = 37773;
+    printf("--------------------------------------\n");
 
+    printf("INTERNAL INFORMATION:\n");
     get_my_ip(net_int);
 
     printf("--------------------------------------\n");
@@ -411,21 +463,6 @@ int main()
 
     printf("START STREAMING THREADS:\n");
 
-    int temp = 0;
-
-    while(1)
-    {
-        if(temp < periph_ip_index && periphs[temp].socketfd != 0)
-        {
-            printf("streaming to %s on socket %d\n", periphs[temp].ip_addr, periphs[temp].socketfd);
-            temp++;
-
-            if(temp >= PERIPHERAL_NODES_MAX_NUMBER)
-            {
-            break;
-            }
-        }
-    }
 
 //    pthread_create(&to_periph_tid, NULL, stream_to_periph_node_thread, NULL);
 
