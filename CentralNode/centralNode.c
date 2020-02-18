@@ -153,7 +153,7 @@ static int media_bus_init(struct media_bus_node_t *node)
 	return 1;
 }
 
-static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
+static int media_bus_send(struct media_bus_node_t *node, const void* data_to_send, int data_to_send_len)
 {
     int temp = 0;
     struct sockaddr_in toAddr;
@@ -161,12 +161,14 @@ static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
 
     /* Destination socket */
     toAddr.sin_family = AF_INET;
-    toAddr.sin_port = htons(central.port);
-    inet_aton(central.ip_addr, &toAddr.sin_addr);
+    toAddr.sin_port = htons(node->port);
+    inet_aton(node->ip_addr, &toAddr.sin_addr);
+
+//    printf("%d %d %s\n", node->socketfd, node->port, node->ip_addr);
 
     /* UDP send to destination socket address*/              /*flag*/
-    temp = sendto(central.socketfd, data_to_send, data_to_send_len, 0, (struct sockaddr*)&toAddr, sizeof(toAddr));
-    
+    temp = sendto(node->socketfd, data_to_send, data_to_send_len, 0, (struct sockaddr*)&toAddr, sizeof(toAddr));
+
     if (temp < 0)
     {
         perror("send failed reason");
@@ -175,7 +177,7 @@ static int media_bus_send(const void* data_to_send, size_t data_to_send_len)
     return temp;
 }
 
-void* stream_to_periph_node_thread(void *para)
+void* stream_to_periph_node_thread(void *node)
 {
 	int err;
     int buffer_frames = CODEC_PORTION_OF_SAMPLES_CNT;
@@ -185,15 +187,21 @@ void* stream_to_periph_node_thread(void *para)
     while (1) 
     {
         /* Listening audio capture device for incoming stream - interleaved frames */
-        if ((err = snd_pcm_readi (capture_handle, bufferTemp, buffer_frames)) != buffer_frames) 
+	    err = snd_pcm_readi(capture_handle, bufferTemp, buffer_frames);
+        if (err != buffer_frames) 
         {
             printf("ERROR: read from audio interface failed (%s)\n", snd_strerror (err));
         }
 
+
         /* Splitting what was read from capture device (buffer) in small chunks and sending them */
         for (unsigned int i = 0; i < (sizeof(bufferTemp) / (UDP_PORTION_OF_SAMPLES_BYTES)); i++) 
         {
-            media_bus_send ((bufferTemp + i * UDP_PORTION_OF_SAMPLES_BYTES), UDP_PORTION_OF_SAMPLES_BYTES);
+            media_bus_send (
+                (struct media_bus_node_t *) node,
+                (bufferTemp + i * UDP_PORTION_OF_SAMPLES_BYTES),
+                UDP_PORTION_OF_SAMPLES_BYTES
+            );
         }
     }
 }
@@ -204,12 +212,21 @@ static int start_streaming_threads()
 
     while (1)
     {
-        if(temp < periph_ip_index && periphs[temp].socketfd != 0)
+        if (temp < periph_ip_index && periphs[temp].socketfd != 0)
         {
             printf("streaming to %s on socket %d\n", periphs[temp].ip_addr, periphs[temp].socketfd);
+
+            pthread_create(
+                &periphs[temp].stream_thread_id, 
+                NULL, 
+                stream_to_periph_node_thread, 
+                ((void *) &periphs[temp])
+            );
+            //pthread_join(periphs[temp].stream_thread_id, NULL);
+
             temp++;
 
-            if(temp >= PERIPHERAL_NODES_MAX_NUMBER)
+            if (temp >= PERIPHERAL_NODES_MAX_NUMBER)
             {
                 perror("Too many peripheral nodes");
                 return 0;
@@ -462,11 +479,8 @@ int main()
     printf("--------------------------------------\n");
 
     printf("START STREAMING THREADS:\n");
+    start_streaming_threads();
 
-
-//    pthread_create(&to_periph_tid, NULL, stream_to_periph_node_thread, NULL);
-
-//    pthread_join(to_periph_tid, NULL);*/
 
     /* Unsubscribe, Delete client */
     mqtt_client_deinit(topic);
