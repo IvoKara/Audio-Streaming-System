@@ -1,10 +1,3 @@
-/*  Record and playback with re-sampling example.
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
-
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -36,11 +29,11 @@
 #include "periph_sdcard.h"
 #include "periph_button.h"
 
-static const char *TAG = "RESAMPLE_EXAMPLE";
+static const char *TAG = "PERIPHERAL_NODE";
 
 #define JSTREAMER_TASK_PRIORITY        5
 
-#define CODEC_SAMPLING_RATE (32000)
+#define CODEC_SAMPLING_RATE (44000)
 #define BITS_PER_CHANNEL (16)
 #define AUDIO_CHANNELS_CNT (2)
 
