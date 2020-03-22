@@ -1,3 +1,10 @@
+/*  Record and playback with re-sampling example.
+   This example code is in the Public Domain (or CC0 licensed, at your option.)
+   Unless required by applicable law or agreed to in writing, this
+   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+   CONDITIONS OF ANY KIND, either express or implied.
+*/
+
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -29,15 +36,11 @@
 #include "periph_sdcard.h"
 #include "periph_button.h"
 
-static const char *TAG = "PERIPHERAL_NODE";
-
-#define LOCAL_LOOPBACK (1)
-#define NET_LOOPBACK   (2)
-#define TEST_LOOPBACK  (NET_LOOPBACK) //(NET_LOOPBACK) // (LOCAL_LOOPBACK)
+static const char *TAG = "RESAMPLE_EXAMPLE";
 
 #define JSTREAMER_TASK_PRIORITY        5
 
-#define CODEC_SAMPLING_RATE (44100)
+#define CODEC_SAMPLING_RATE (32000)
 #define BITS_PER_CHANNEL (16)
 #define AUDIO_CHANNELS_CNT (2)
 
@@ -88,7 +91,7 @@ const int CONNECTED_BIT = BIT0;
 
 
 static TaskHandle_t         jstreamer_to_net_task_handle;
-static TaskHandle_t         jstreamer_from_net_task_handle;
+static TaskHandle_t         stream_from_central_node_thread_handle;
 static xQueueHandle         intertask_que;
 
 struct media_bus_t
@@ -116,9 +119,9 @@ struct mbus_cfg_t
 	char* sendto_ip_addr;
 	unsigned short sendto_port;
 } mbus_cfg = {
-	.my_ip_addr = "192.168.43.116", 
+	.my_ip_addr = "192.168.43.9", 
 	.my_listening_port = 37773, 
-	.sendto_ip_addr = "192.168.43.33",
+	.sendto_ip_addr = "192.168.43.152",
 	.sendto_port = 27772,
 };
 
@@ -188,22 +191,6 @@ static void wifi_task(void *pvParameters)
     }
 }
 
-
-
-static void intertask_que_send(void *que, intertask_task_cmd_t type, void *data, int index, int len, int dir)
-{
-    intertask_task_msg_t evt = {0};
-    evt.type = type;
-    evt.pdata = data;
-    evt.index = index;
-    evt.len = len;
-    if (dir) {
-        xQueueSendToFront(que, &evt, 0) ;
-    } else {
-        xQueueSend(que, &evt, 0);
-    }
-}
-
 static audio_element_handle_t create_filter(int source_rate, int source_channel, int dest_rate, int dest_channel, audio_codec_type_t type)
 {
     rsp_filter_cfg_t rsp_cfg = DEFAULT_RESAMPLE_FILTER_CONFIG();
@@ -230,24 +217,11 @@ static audio_element_handle_t create_i2s_stream(int sample_rates, int bits, int 
     return i2s_stream;
 }
 
-static audio_element_handle_t create_raw_reader()
-{
-    raw_stream_cfg_t raw_cfg = RAW_STREAM_CFG_DEFAULT();
-    raw_cfg.type = AUDIO_STREAM_READER;
-    return raw_stream_init(&raw_cfg);
-}
-
 static audio_element_handle_t create_raw_writer()
 {
     raw_stream_cfg_t raw_cfg = RAW_STREAM_CFG_DEFAULT();
     raw_cfg.type = AUDIO_STREAM_WRITER;
     return raw_stream_init(&raw_cfg);
-}
-
-static esp_err_t recorder_pipeline_read(void *handle, char *data, int data_size)
-{
-    raw_stream_read(audio_pipeline_get_el_by_tag((audio_pipeline_handle_t)handle, "raw_reader"), data, data_size);
-    return ESP_OK;
 }
 
 static esp_err_t recorder_pipeline_write(void *handle, char *data, int data_size)
@@ -256,7 +230,6 @@ static esp_err_t recorder_pipeline_write(void *handle, char *data, int data_size
     return ESP_OK;
 }
 
-
 static void mbus_receive(void * buff_to_receive, size_t buff_to_receive_len)
 {
     int i = 0;
@@ -264,9 +237,13 @@ static void mbus_receive(void * buff_to_receive, size_t buff_to_receive_len)
 	int size;
     int ret = 0;
 
+    unsigned int fromAddrLen = sizeof(fromAddr);
+
     xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT, false, true, portMAX_DELAY);
-    
-	size = recv(media_bus.sock, buff_to_receive, buff_to_receive_len, 0);
+
+    memset(&fromAddr, 0, sizeof(struct sockaddr_in));
+
+	size = recvfrom(media_bus.sock, buff_to_receive, buff_to_receive_len, 0, (struct sockaddr*)&fromAddr, (socklen_t *)&fromAddrLen);
 
 	if (size < 0) {
 		if ((size == -EAGAIN)) {
@@ -275,7 +252,7 @@ static void mbus_receive(void * buff_to_receive, size_t buff_to_receive_len)
 			ESP_LOGE(TAG, "Error on receiving - error = %d\n", size);
 			perror("receive failed reason");
 		}
-	}
+	} 
 }
 
 static int media_bus_init(struct mbus_cfg_t* cfg)
@@ -293,7 +270,7 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	if(ret < 0) {
 		ESP_LOGI(TAG, "socket err");
 		perror("");
-		return 0;
+		goto exit;
 	}
 	media_bus.sock = ret;
 
@@ -304,7 +281,7 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	if(ret < 0) {
 		ESP_LOGI(TAG, "setsockopt SO_RCVTIMEO err");
 		perror("");
-		return 0;
+		goto exit;
 	}
 	ESP_LOGI(TAG, "setsockopt SO_RCVTIMEO success\n");
 
@@ -312,13 +289,13 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	if(ret < 0) {
 		ESP_LOGI(TAG, "setsockopt SO_REUSEADDR err");
 		perror("");
-		return 0;
+		goto exit;
 	}
 	ESP_LOGI(TAG, "setsockopt SO_REUSEADDR success\n");
 
 	memset(&myAddr, 0, sizeof(struct sockaddr_in));
 	myAddr.sin_family      = AF_INET;
-    inet_aton(cfg->my_ip_addr, &myAddr.sin_addr);
+	inet_aton(cfg->my_ip_addr, &myAddr.sin_addr);
 	myAddr.sin_port        = htons(cfg->my_listening_port);
 	myAddr.sin_len = sizeof(struct sockaddr_in);
 
@@ -327,34 +304,21 @@ static int media_bus_init(struct mbus_cfg_t* cfg)
 	{
 		ESP_LOGI(TAG, "could not bind or connect to socket, error = %d\n", ret);
 		perror("");
-		return 0;
+		goto close_and_out;
 	}
-
-    struct ip_mreq group;
-    group.imr_multiaddr.s_addr = inet_addr("224.0.0.1");
-    group.imr_interface.s_addr = inet_addr(cfg->my_ip_addr);
-
-    if(setsockopt(media_bus.sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&group, sizeof(group)) < 0)
-    {
-        perror("Adding multicast group error");
-        close(media_bus.sock);
-        exit(1);
-    }
-
-    printf("Adding multicast group...OK.\n");
 
 	ESP_LOGI(TAG, "listening on port %d, socket %u\n", cfg->my_listening_port, media_bus.sock);
 
-	return 1;
+close_and_out:
+exit:
+
+	return 0;
 }
 
-
-void jstreamer_from_net_task (void *para)
+void stream_from_central_node_thread (void *para)
 {
     audio_pipeline_handle_t pipeline_play = NULL;
     audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
-
-    static intertask_task_msg_t intertask_msg;
 
     /**
      * For the Playback:
@@ -368,8 +332,10 @@ void jstreamer_from_net_task (void *para)
 
     ESP_LOGI(TAG, "[2.2] Create audio elements for playback pipeline");
     audio_element_handle_t raw_writer_el = create_raw_writer();
-    audio_element_handle_t filter_upsample_el = create_filter(SAVE_FILE_RATE, SAVE_FILE_CHANNEL, PLAYBACK_RATE, PLAYBACK_CHANNEL, AUDIO_CODEC_TYPE_DECODER);
-    audio_element_handle_t i2s_writer_el = create_i2s_stream(PLAYBACK_RATE, PLAYBACK_BITS, PLAYBACK_CHANNEL, AUDIO_STREAM_WRITER);
+    audio_element_handle_t filter_upsample_el = create_filter(SAVE_FILE_RATE, 
+        SAVE_FILE_CHANNEL, PLAYBACK_RATE, PLAYBACK_CHANNEL, AUDIO_CODEC_TYPE_DECODER);
+    audio_element_handle_t i2s_writer_el = create_i2s_stream(PLAYBACK_RATE, 
+        PLAYBACK_BITS, PLAYBACK_CHANNEL, AUDIO_STREAM_WRITER);
 
     ESP_LOGI(TAG, "[2.3] Register audio elements to playback pipeline");
     audio_pipeline_register(pipeline_play, raw_writer_el,        "raw_writer");
@@ -388,26 +354,13 @@ void jstreamer_from_net_task (void *para)
     audio_pipeline_run(pipeline_play);
 
     while (1) {
-#if (TEST_LOOPBACK == NET_LOOPBACK)
+
         unsigned int i = 0;
         for (i = 0; i < (sizeof(rcv_buff) / (UDP_PORTION_OF_SAMPLES_BYTES)); i++) {
             mbus_receive((rcv_buff + i * UDP_PORTION_OF_SAMPLES_BYTES), UDP_PORTION_OF_SAMPLES_BYTES);
-            //ESP_LOGI(TAG, "RECEIVED %d", i);
         }
 
         recorder_pipeline_write(pipeline_play, rcv_buff, sizeof(rcv_buff));
-
-#elif (TEST_LOOPBACK == LOCAL_LOOPBACK)
-        if (xQueueReceive(intertask_que, &intertask_msg, portMAX_DELAY)) {
-            if (intertask_msg.type == INTERTASK_CMD_PUSH) {
-                //ESP_LOGE(TAG, "Recv Que INTERTASK_CMD_PUSH");
-                recorder_pipeline_write(pipeline_play, biggerTemp, sizeof(biggerTemp));
-            } else if (intertask_msg.type == INTERTASK_CMD_STOP) {
-                ESP_LOGE(TAG, "Recv Que INTERTASK_CMD_STOP");
-                break;
-            }
-        }
-#endif
     }
 
     ESP_LOGI(TAG, "[ 1.5 ] Stop audio_pipeline");
@@ -425,7 +378,7 @@ void jstreamer_from_net_task (void *para)
     audio_element_deinit(filter_upsample_el);
     audio_element_deinit(i2s_writer_el);
 
-    jstreamer_from_net_task_handle = NULL;
+    stream_from_central_node_thread_handle = NULL;
     vTaskDelete(NULL);
 }
 
@@ -441,19 +394,15 @@ void app_main(void)
 
     media_bus_init(&mbus_cfg);
 
-    // Setup audio codec
-		audio_board_handle_t board_handle = audio_board_init();
+    /* Setup audio codec */
+    audio_board_handle_t board_handle = audio_board_init();
     audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_BOTH, AUDIO_HAL_CTRL_START);
 
 
-    intertask_que = xQueueCreate(3, sizeof(intertask_task_msg_t));
-    configASSERT(intertask_que);
-
-    if (xTaskCreate(jstreamer_from_net_task, "JStreamerFromNetTask", 3 * 1024, intertask_que,
-                    JSTREAMER_TASK_PRIORITY, &jstreamer_from_net_task_handle) != pdPASS) {
+    if (xTaskCreate(stream_from_central_node_thread, "JStreamerFromNetTask", 3 * 1024, NULL,
+                    JSTREAMER_TASK_PRIORITY, &stream_from_central_node_thread_handle) != pdPASS) {
         ESP_LOGE(TAG, "Error create JStreamerFromNetTask");
     }
 
     ESP_LOGW(TAG, "Exitting main thread");
 }
-
