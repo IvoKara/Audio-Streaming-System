@@ -386,7 +386,7 @@ static int mqtt_message_send(char *topic, char *payload)
 static int mqtt_message_arrive(void *context, char *topicName, int topicLen, MQTTClient_message *message)
 {
 	/* Copy incoming MQTT payload to global variable */
-	strcpy(periphs[periph_ip_index].ip_addr, message->payload);
+	strncpy(periphs[periph_ip_index].ip_addr, message->payload, message->payloadlen);
 
 	/* Create socket to the corresponding Peripheral Node */
 	media_bus_init(&periphs[periph_ip_index++]);
