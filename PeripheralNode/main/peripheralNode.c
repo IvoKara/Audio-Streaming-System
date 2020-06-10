@@ -45,7 +45,7 @@
 
 static const char *TAG = "PERIPHERAL_NODE";
 
-#define JSTREAMER_TASK_PRIORITY (5)
+#define AUDIO_STREAMER_TASK_PRIORITY (5)
 
 #define CODEC_SAMPLING_RATE (44100)
 #define BITS_PER_CHANNEL (16)
@@ -93,26 +93,7 @@ static int recieved_ip = 0;
 static TaskHandle_t stream_from_central_node_thread_handle;
 static char rcv_buff[CODEC_PORTION_OF_SAMPLES_BYTES];
 
-static void nbo_to_str_ip(char *network_byte_order)
-{
-    int nbo_len = 8;
-    char octet_hex[5];
-	char octet_dec[5];
-	char *sep = ".";
 
-	strcpy(my_ipv4_addr, "");
-	
-	for (int i = nbo_len - 2; i >= 0; i-=2)
-	{
-		sprintf(octet_hex, "%c%c", network_byte_order[i], network_byte_order[i+1]);
-		if(i == 0)
-		{
-			sep = "";
-		}
-		sprintf(octet_dec, "%d%s", (int)strtol(octet_hex, NULL, 16), sep);
-		strcat(my_ipv4_addr, octet_dec);
-	}
-}
 
 static void get_my_ip()
 {
@@ -120,10 +101,8 @@ static void get_my_ip()
     tcpip_adapter_ip_info_t ipInfo; 
     tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ipInfo);
     
-    /* GLOBAL - Convert IP from Network Byte Oreder to String */
-    char ip_network_byte_order[8];
-    sprintf(ip_network_byte_order, "%x", ipInfo.ip.addr);
-    nbo_to_str_ip(ip_network_byte_order);
+    /* Convert IP from metwork byte order to dot-decimal format string */
+    strcpy(my_ipv4_addr, ip4addr_ntoa(&(ipInfo.ip)));
 }
 
 static int media_bus_init(struct media_bus_node_t *node)
@@ -466,16 +445,16 @@ void app_main()
     wifi_init();
     mqtt_app_start();
 
-    //receive packets on socket
+    /* receive packets on socket */
     media_bus_init(&peripheral);
 
-    // Setup audio codec
+    /* Setup audio codec */
 	audio_board_handle_t board_handle = audio_board_init();
     audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_BOTH, AUDIO_HAL_CTRL_START);
 
-    if (xTaskCreate(stream_from_central_node_thread, "JStreamerFromNetTask", 3 * 1024, NULL,
-                    JSTREAMER_TASK_PRIORITY, &stream_from_central_node_thread_handle) != pdPASS) {
-        ESP_LOGE(TAG, "Error create JStreamerFromNetTask");
+    if (xTaskCreate(stream_from_central_node_thread, "AudioStreamerFromCentralNodeTask", 3 * 1024, NULL,
+                    AUDIO_STREAMER_TASK_PRIORITY, &stream_from_central_node_thread_handle) != pdPASS) {
+        ESP_LOGE(TAG, "Error create AudioStreamerFromCentralNodeTask");
     }
 
     ESP_LOGW(TAG, "Exitting main thread");
