@@ -19,5 +19,5 @@ the configuration look up at the Documentation file.
 
 	wireless/ ? (only to be memorised)
 	├── interfaces -> /etc/network/interfaces
-	└── wpa\_supplicant.conf -> /etc/wpa\_supplicant/wpa\_supplicant.conf 
+	└── wpa_supplicant.conf -> /etc/wpa_supplicant/wpa_supplicant.conf 
 ```
