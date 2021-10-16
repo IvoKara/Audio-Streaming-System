@@ -1,0 +1,6 @@
+[Unit] Description=BluezALSA proxy Requires=bluetooth.service After=bluetooth.service
+sudo nano /lib/systemd/system/bluealsa.service
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/bluealsa -p a2dp-sink

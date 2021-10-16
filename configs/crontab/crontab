@@ -1,0 +1,11 @@
+#this file has no specific location
+#type 'crontab -e' and paste its content 
+#inside the opened text editor
+@reboot sudo modprobe snd-aloop
+@reboot bt-agent -c NoInputNoOutput
+@reboot sudo bluealsa-aplay -d hw:1,0 00:00:00:00:00:00
+@reboot bash /home/pi/bin/audio-streamer
+
+#for remote desktop connection
+@reboot vncserver :1
+
