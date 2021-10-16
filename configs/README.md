@@ -1,6 +1,10 @@
 # Configs
 For more information about how to setup
 the configuration look up at the Documentation file.
+
+For command configuration see `commands.conf` file.
+
+For file configuration:
 ``` 
 	bluetooth/
 	├── audio.conf -> /etc/bluetooth/audio.conf
